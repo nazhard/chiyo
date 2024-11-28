@@ -59,6 +59,7 @@ func (g *Group) Use(mw func(http.HandlerFunc) http.HandlerFunc) {
 
 func (r *Router) AddRoute(method, path string, handler http.HandlerFunc) {
 	path = strings.Trim(path, "/")
+	parts := strings.Split(path, "/")
 
 	if strings.Contains(path, ":") || strings.Contains(path, "*") {
 		if r.dynamicRoutes[method] == nil {
@@ -67,7 +68,7 @@ func (r *Router) AddRoute(method, path string, handler http.HandlerFunc) {
 			}
 		}
 
-		r.insertDynamicRoute(method, path, handler)
+		r.insertDynamicRoute(method, parts, handler)
 	} else {
 		r.staticRoutes[method+" "+path] = handler
 	}
@@ -84,8 +85,7 @@ func (g *Group) AddRoute(method, path string, handler http.HandlerFunc) {
 	g.router.AddRoute(method, fullPath, wrappedHandler)
 }
 
-func (r *Router) insertDynamicRoute(method, path string, handler http.HandlerFunc) {
-	parts := strings.Split(path, "/")
+func (r *Router) insertDynamicRoute(method string, parts []string, handler http.HandlerFunc) {
 	current := r.dynamicRoutes[method]
 
 	for _, part := range parts {
@@ -136,6 +136,11 @@ func (r *Router) searchDynamicRoute(root *node, path string) http.HandlerFunc {
 }
 
 func (r *Router) serveWithMiddleware(handler http.HandlerFunc, w http.ResponseWriter, req *http.Request) {
+	if len(r.middleware) == 0 {
+		handler(w, req)
+		return
+	}
+
 	for i := len(r.middleware) - 1; i >= 0; i-- {
 		handler = r.middleware[i](handler)
 	}
