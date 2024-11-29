@@ -1,6 +1,7 @@
 package chiyo
 
 import (
+	"context"
 	"net/http"
 	"strings"
 )
@@ -31,6 +32,7 @@ type node struct {
 	handler    http.HandlerFunc
 	isParam    bool
 	isWillcard bool
+	paramName  string
 }
 
 func NewRouter() *Router {
@@ -47,14 +49,6 @@ func (r *Router) Group(prefix string) *Group {
 		prefix: strings.Trim(prefix, "/"),
 		router: r,
 	}
-}
-
-func (r *Router) Use(mw func(http.HandlerFunc) http.HandlerFunc) {
-	r.middleware = append(r.middleware, mw)
-}
-
-func (g *Group) Use(mw func(http.HandlerFunc) http.HandlerFunc) {
-	g.middleware = append(g.middleware, mw)
 }
 
 func (r *Router) AddRoute(method, path string, handler http.HandlerFunc) {
@@ -85,16 +79,26 @@ func (g *Group) AddRoute(method, path string, handler http.HandlerFunc) {
 	g.router.AddRoute(method, fullPath, wrappedHandler)
 }
 
+func (r *Router) Use(mw func(http.HandlerFunc) http.HandlerFunc) {
+	r.middleware = append(r.middleware, mw)
+}
+
+func (g *Group) Use(mw func(http.HandlerFunc) http.HandlerFunc) {
+	g.middleware = append(g.middleware, mw)
+}
+
 func (r *Router) insertDynamicRoute(method string, parts []string, handler http.HandlerFunc) {
 	current := r.dynamicRoutes[method]
 
 	for _, part := range parts {
 		var key string
 		var isParam, isWillcard bool
+		var paramName string
 
 		if strings.HasPrefix(part, ":") {
 			key = ":param"
 			isParam = true
+			paramName = strings.TrimPrefix(part, ":")
 		} else if strings.HasPrefix(part, "*") {
 			key = "*"
 			isWillcard = true
@@ -107,6 +111,7 @@ func (r *Router) insertDynamicRoute(method string, parts []string, handler http.
 				children:   make(map[string]*node),
 				isParam:    isParam,
 				isWillcard: isWillcard,
+				paramName:  paramName,
 			}
 		}
 
@@ -116,23 +121,27 @@ func (r *Router) insertDynamicRoute(method string, parts []string, handler http.
 	current.handler = handler
 }
 
-func (r *Router) searchDynamicRoute(root *node, path string) http.HandlerFunc {
+func (r *Router) searchDynamicRoute(root *node, path string) (http.HandlerFunc, map[string]string) {
 	parts := strings.Split(path, "/")
 	current := root
+	params := make(map[string]string)
 
 	for _, part := range parts {
 		if child, exists := current.children[part]; exists {
 			current = child
 		} else if paramChild, exists := current.children[":param"]; exists {
 			current = paramChild
+			if current.paramName != "" {
+				params[current.paramName] = part
+			}
 		} else if wildcardChild, exists := current.children["*"]; exists {
-			return wildcardChild.handler
+			return wildcardChild.handler, params
 		} else {
-			return nil
+			return nil, nil
 		}
 	}
 
-	return current.handler
+	return current.handler, params
 }
 
 func (r *Router) serveWithMiddleware(handler http.HandlerFunc, w http.ResponseWriter, req *http.Request) {
@@ -159,7 +168,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if root, exists := r.dynamicRoutes[method]; exists {
-		if handler := r.searchDynamicRoute(root, path); handler != nil {
+		if handler, params := r.searchDynamicRoute(root, path); handler != nil {
+			ctx := context.WithValue(req.Context(), "params", params)
+			req = req.WithContext(ctx)
+
 			r.serveWithMiddleware(handler, w, req)
 			return
 		}
